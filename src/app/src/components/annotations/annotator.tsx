@@ -5,8 +5,6 @@
 import * as L from "leaflet";
 import "leaflet-draw";
 import React, { Component } from "react";
-import { IconButton } from "./button";
-import { AnalyticsPopUp } from "./analyticsgraph";
 import {
   Card,
   HotkeysTarget,
@@ -40,7 +38,7 @@ import {
   APIGetPredictionProgress,
 } from "@portal/api/annotation";
 
-import { invert, cloneDeep, isEmpty, debounce } from "lodash";
+import { invert, cloneDeep, isEmpty } from "lodash";
 
 import { CreateGenericToast } from "@portal/utils/ui/toasts";
 import AnnotatorInstanceSingleton from "./utils/annotator.singleton";
@@ -87,19 +85,6 @@ interface AnnotatorProps {
   useDarkTheme: boolean;
   loadedModel: RegisteredModel | undefined;
   isConnected: boolean;
-}
-
-// extra interface for getAnalyticsData function
-interface VideoRawData {
-  fps: number;
-  frames: VideoData[][];
-};
-interface VideoData {
-  confidence: number;
-  tag: {
-    id: number;
-    name: string;
-  }
 }
 
 interface AnnotatorState {
@@ -163,13 +148,6 @@ interface AnnotatorState {
     opacity: number;
   };
   currAnnotationPlaybackId: number;
-  /* Store video analytics (graph) related*/
-  isAnalytics: boolean;
-  videoRawData: VideoRawData;
-  videoGraphData: {
-    x: string;
-    y: number[];
-  }[];
 }
 
 /**
@@ -268,13 +246,8 @@ export default class Annotator extends Component<
         },
       },
       currAnnotationPlaybackId: 0,
-      isAnalytics: false,
-      videoRawData: {
-        fps: 0,
-        frames: [[]],
-      },
-      videoGraphData: [],
     };
+
     this.toaster = new Toaster({}, {});
     this.progressToastInterval = 600;
 
@@ -385,21 +358,8 @@ export default class Annotator extends Component<
     setTimeout(() => this.updateImage(), 200);
   }
 
-  // use debouncer to prevent lagging (wait 0.5sec since last function call before doing this heavy operation)
-  private debouncedUpdate = debounce(() => {
-    this.getAnalyticsData(this.state.videoRawData);
-  }, 500);
-
   // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
-  componentDidUpdate(prevProp: AnnotatorProps, prevState: AnnotatorState) {
-    // update graph when confidence or filter changes
-    if (this.state.confidence !== prevState.confidence ||
-        this.state.filterArr !== prevState.filterArr ||
-        this.state.showSelected !== prevState.showSelected
-      ) {
-      this.debouncedUpdate();
-    };
-
+  componentDidUpdate() {
     /* Obtain Tag Map for loaded Model */
     /* The conditional checks are necessary due to the use of setStates */
     if (
@@ -826,9 +786,6 @@ export default class Annotator extends Component<
         this.state.inferenceOptions.iou
       )
         .then(response => {
-          // store video data used for analytics purpose
-          this.setState({ videoRawData: response.data })
-          this.getAnalyticsData(response.data);
           if (this.currentAsset.url === asset.url && singleAnalysis) {
             const videoElement = this.videoOverlay.getElement();
             /**
@@ -1473,77 +1430,6 @@ export default class Annotator extends Component<
     if (message !== "") toastProps.action = { text: message };
 
     return toastProps;
-  };
-
-  /*
-    Store analytics data of the latest video analyzed in 'videoGraphData' state.
-  */
-  private getAnalyticsData(data: VideoRawData) {
-    // get all the tag names, store in an array, take note of filterArr and showSelected
-    const tagNames: string[] = [];
-    Object.values(data['frames']).forEach(frame => {
-      frame.forEach(item => {
-        let name = item['tag']['name'];
-        name = name.substring(1, name.length - 1);
-        if (!tagNames.includes(name)) {
-          if (this.state.filterArr.length > 0) {
-            if ((this.state.showSelected && this.state.filterArr.includes(name)) ||
-              (!this.state.showSelected && !this.state.filterArr.includes(name))) {
-                tagNames.push(name);
-              }
-          } else {
-            tagNames.push(name);
-          }
-        };
-      });
-    });
-
-    // initialize object with tag names as keys, value is an array of '0' with length 'num frames'
-    const analyticsDataDict: {[key: string]: number[]} = {};
-    const numFrames = Object.keys(data['frames']).length;
-    tagNames.forEach(tag => {
-      analyticsDataDict[tag] = Array(numFrames).fill(0);
-    });
-
-    // analyticsDataDict[key][frame] display the number of 'key' tag name in frame 'frame'
-    // example: analyticsDataDict['RBC'][5] = 10 means there are 10 RBC on frame 5 (0 index)
-    let counter = 0;
-    const confidence = this.state.confidence;
-    Object.values(data['frames']).forEach(frame => {
-      frame.forEach(instance => {
-        if (instance['confidence'] >= confidence) {
-          let tagNameKey = instance['tag']['name'];
-          tagNameKey = tagNameKey.substring(1, tagNameKey.length - 1);
-          if (tagNames.includes(tagNameKey)) {
-            analyticsDataDict[tagNameKey][counter] += 1;
-          };
-        };
-      });
-      counter += 1;
-    });
-
-    // generate graphData array to fill in 'series' attribute in chart component
-    const frames = analyticsDataDict;
-    const fps = data['fps'];
-    const graphData: {
-      x: string;
-      y: number[];
-      count: number;
-    }[] = []
-    Object.entries(frames).forEach(([tagNameKey, tagNameVal]) => {
-      Object.entries(tagNameVal).forEach(([frameKey, count]) => {
-        if (count > 0) {
-          graphData.push({
-            x: tagNameKey,
-            y: [Number(frameKey) / fps, (Number(frameKey) + 1) / fps],
-            count: count,
-          })
-        }
-      })
-    })
-    this.setState({
-      videoGraphData: graphData
-    })
   }
 
   /* Hotkey for Quick Annotation Selection */
@@ -1649,15 +1535,6 @@ export default class Annotator extends Component<
     );
   }
 
-  /* Update video to a particular timeStamp (in seconds) */
-  public updateVideoTimeStamp(timeStamp: number) {
-    console.log(this.videoOverlay)
-    if (this.videoOverlay) {
-      const videoElement = this.videoOverlay.getElement();
-      if (videoElement) videoElement.currentTime = timeStamp;
-    }
-  }
-
   render(): JSX.Element {
     /* Prefix for Dynamic Styling of Collapsing Image List */
     const collapsedButtonTheme = this.props.useDarkTheme ? "" : "light-";
@@ -1670,15 +1547,6 @@ export default class Annotator extends Component<
 
     return (
       <div>
-        {this.state.isAnalytics ? (
-          <AnalyticsPopUp closeCallback={() => this.setState({
-              isAnalytics: false 
-            })}
-            graphData={this.state.videoGraphData}
-            fps={this.state.videoRawData['fps']}
-            videoElement={this.videoOverlay.getElement()}
-          />) : ''
-        }
         <Toaster {...this.state} ref={this.refHandlers.toaster} />
         <div className={"workspace"}>
           {/* Appends Styling Prefix if Image List is Collapsed */}
@@ -1706,13 +1574,6 @@ export default class Annotator extends Component<
               className={[isCollapsed, "image-bar"].join("")}
               id={"image-bar"}
             >
-              <IconButton
-                stroke={this.state.isAnalytics ? "eye" : "chart-bar-square"}
-                onClick={() => this.setState(prev => ({
-                  isAnalytics: !prev.isAnalytics,
-                }))}
-                style={{height: 45, width: 45, marginRight: "5px",}}
-              />
               <ImageBar
                 ref={ref => {
                   this.imagebarRef = ref;
